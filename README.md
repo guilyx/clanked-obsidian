@@ -44,6 +44,25 @@ Safety rails (always on): paths are jailed to the vault root (`..`, absolute pat
 
 Prerequisites: Node 20+, Tailscale already up (`tailscale status` works), and the vault synced to the NUC (Syncthing, Obsidian Sync via a headless client, git — whatever you already use).
 
+### One-liner install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/guilyx/clanked-obsidian/main/scripts/install.sh | bash
+```
+
+It prompts for your vault path, then clones to `/opt/clanked-obsidian`, builds, generates an `AUTH_TOKEN`, writes `.env` (chmod 600), installs + starts a hardened systemd service, runs `tailscale serve --bg 8484`, and prints the exact MCP URL, header, and `claude mcp add` command to paste. Re-running it updates an existing install and keeps your `.env`.
+
+Non-interactive / customized:
+
+```bash
+VAULT_PATH=/home/you/vaults/main READ_ONLY=true \
+  curl -fsSL https://raw.githubusercontent.com/guilyx/clanked-obsidian/main/scripts/install.sh | bash
+```
+
+Recognized env vars: `VAULT_PATH`, `INSTALL_DIR`, `PORT`, `READ_ONLY`, `DAILY_NOTES_FOLDER`, `NO_SYSTEMD=1`, `NO_TAILSCALE=1`.
+
+### Manual install
+
 ```bash
 git clone https://github.com/guilyx/clanked-obsidian.git /opt/clanked-obsidian
 cd /opt/clanked-obsidian
