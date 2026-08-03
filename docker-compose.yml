@@ -1,0 +1,16 @@
+services:
+  clanked-obsidian:
+    build: .
+    container_name: clanked-obsidian
+    restart: unless-stopped
+    # Publish on loopback only — tailscale serve/funnel proxies from there.
+    ports:
+      - "127.0.0.1:8484:8484"
+    environment:
+      AUTH_TOKEN: ${AUTH_TOKEN:?run 'openssl rand -hex 32' and put it in .env}
+      READ_ONLY: ${READ_ONLY:-false}
+      ALLOW_DELETE: ${ALLOW_DELETE:-false}
+      DAILY_NOTES_FOLDER: ${DAILY_NOTES_FOLDER:-}
+    volumes:
+      # Left side: vault path on the NUC. Add ':ro' for a read-only mount.
+      - ${VAULT_PATH:?set VAULT_PATH in .env}:/vault
