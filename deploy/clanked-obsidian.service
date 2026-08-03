@@ -1,0 +1,35 @@
+# systemd unit for running clanked-obsidian directly on the NUC (no Docker).
+#
+# Install:
+#   sudo cp deploy/clanked-obsidian.service /etc/systemd/system/
+#   sudo systemctl edit clanked-obsidian   # or edit User/paths below
+#   sudo systemctl enable --now clanked-obsidian
+#
+# Adjust User, WorkingDirectory and EnvironmentFile to your setup.
+
+[Unit]
+Description=clanked-obsidian MCP server (Obsidian vault access for Claude)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=obsidian
+WorkingDirectory=/opt/clanked-obsidian
+EnvironmentFile=/opt/clanked-obsidian/.env
+ExecStart=/usr/bin/node /opt/clanked-obsidian/dist/index.js
+Restart=on-failure
+RestartSec=3
+
+# Hardening: the service can only write inside the vault.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/you/vaults/main
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
