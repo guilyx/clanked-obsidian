@@ -9,6 +9,9 @@
 #   VAULT_PATH=/home/you/vaults/main \
 #   curl -fsSL https://raw.githubusercontent.com/guilyx/clanked-obsidian/main/scripts/install.sh | bash
 #
+# Re-running is safe: it updates the code, keeps the existing .env (no
+# prompts), rebuilds, and restarts the service. Delete .env to reconfigure.
+#
 # Optional env overrides:
 #   INSTALL_DIR   where to install (default /opt/clanked-obsidian)
 #   PORT          HTTP port (default 8484)
@@ -41,12 +44,16 @@ prompt() {
   printf '%s' "$reply"
 }
 
+env_get() { sed -n "s/^$2=//p" "$1" | head -1; }
+
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
     SUDO="sudo"
   fi
 fi
+CAN_ROOT=0
+if [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; then CAN_ROOT=1; fi
 
 # --- 1. Dependencies -------------------------------------------------------
 
@@ -55,33 +62,40 @@ command -v curl >/dev/null 2>&1 || die "curl is required. Install it and re-run.
 
 if ! command -v node >/dev/null 2>&1; then
   die "Node.js >= 20 is required. Install it first, e.g.:
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs"
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
+or with nvm:
+  nvm install 22"
 fi
+NODE_BIN="$(command -v node)"
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [ "$NODE_MAJOR" -lt 20 ]; then
-  die "Node.js >= 20 required, found $(node --version). Upgrade Node and re-run."
+  die "Node.js >= 20 required, found $(node --version) at $NODE_BIN.
+If you use nvm, run 'nvm use 22' (or 'nvm install 22') in this shell and re-run."
 fi
-command -v npm >/dev/null 2>&1 || die "npm is required (comes with Node.js)."
 
-# --- 2. Vault path ---------------------------------------------------------
-
-if [ -z "${VAULT_PATH:-}" ]; then
-  VAULT_PATH="$(prompt "Absolute path to your Obsidian vault: ")"
+# Always use the npm that ships alongside the resolved node binary. This
+# sidesteps the classic broken combo of a distro apt npm
+# (/usr/share/nodejs/npm) paired with an nvm-installed node, which dies with
+# "Cannot find module 'semver'".
+NPM="$(dirname "$NODE_BIN")/npm"
+if [ ! -x "$NPM" ]; then
+  NPM="$(command -v npm || true)"
 fi
-[ -n "$VAULT_PATH" ] || die "VAULT_PATH is required (set it as an env var for non-interactive installs)."
-case "$VAULT_PATH" in
-  /*) ;;
-  *) die "VAULT_PATH must be absolute, got: $VAULT_PATH" ;;
-esac
-[ -d "$VAULT_PATH" ] || die "No such directory: $VAULT_PATH"
+[ -n "$NPM" ] || die "npm not found (it normally ships with Node.js)."
+if ! "$NPM" --version >/dev/null 2>&1; then
+  die "npm at $NPM is broken — usually a distro npm mixed with an nvm node.
+Fix with ONE of these, then re-run:
+  nvm install-latest-npm      # give nvm's node a matching npm
+  sudo apt-get remove npm     # drop the distro npm so nvm's is used"
+fi
 
-# --- 3. Clone or update ----------------------------------------------------
+# --- 2. Clone or update ----------------------------------------------------
 
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing install in $INSTALL_DIR"
   git -C "$INSTALL_DIR" fetch origin "$BRANCH"
-  git -C "$INSTALL_DIR" checkout "$BRANCH"
-  git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
+  git -C "$INSTALL_DIR" checkout -q "$BRANCH"
+  git -C "$INSTALL_DIR" pull --ff-only -q origin "$BRANCH"
 else
   info "Cloning into $INSTALL_DIR"
   if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
@@ -92,24 +106,39 @@ else
   git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
-# --- 4. Build --------------------------------------------------------------
-
-info "Installing dependencies and building"
-(cd "$INSTALL_DIR" && npm ci --silent && npm run build --silent)
-
-# --- 5. Configuration ------------------------------------------------------
+# --- 3. Configuration ------------------------------------------------------
+# An existing .env wins: re-runs never prompt and never rotate the token.
 
 ENV_FILE="$INSTALL_DIR/.env"
 if [ -f "$ENV_FILE" ]; then
-  info "Keeping existing $ENV_FILE"
-  AUTH_TOKEN="$(sed -n 's/^AUTH_TOKEN=//p' "$ENV_FILE" | head -1)"
+  info "Keeping existing $ENV_FILE (delete it to reconfigure)"
+  EXISTING_VAULT="$(env_get "$ENV_FILE" VAULT_PATH)"
+  if [ -n "${VAULT_PATH:-}" ] && [ "$VAULT_PATH" != "$EXISTING_VAULT" ]; then
+    warn "Ignoring VAULT_PATH=$VAULT_PATH — .env already has $EXISTING_VAULT"
+  fi
+  VAULT_PATH="$EXISTING_VAULT"
+  AUTH_TOKEN="$(env_get "$ENV_FILE" AUTH_TOKEN)"
+  PORT="$(env_get "$ENV_FILE" PORT)"
+  PORT="${PORT:-8484}"
+  [ -n "$VAULT_PATH" ] || die "Existing $ENV_FILE has no VAULT_PATH. Delete it and re-run."
 else
-  info "Generating $ENV_FILE"
+  if [ -z "${VAULT_PATH:-}" ]; then
+    VAULT_PATH="$(prompt "Absolute path to your Obsidian vault: ")"
+  fi
+  [ -n "$VAULT_PATH" ] || die "VAULT_PATH is required (set it as an env var for non-interactive installs)."
+  VAULT_PATH="${VAULT_PATH%/}"
+  case "$VAULT_PATH" in
+    /*) ;;
+    *) die "VAULT_PATH must be absolute, got: $VAULT_PATH" ;;
+  esac
+  [ -d "$VAULT_PATH" ] || die "No such directory: $VAULT_PATH"
+
   if command -v openssl >/dev/null 2>&1; then
     AUTH_TOKEN="$(openssl rand -hex 32)"
   else
     AUTH_TOKEN="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
   fi
+  info "Generating $ENV_FILE"
   cat > "$ENV_FILE" <<EOF
 VAULT_PATH=$VAULT_PATH
 AUTH_TOKEN=$AUTH_TOKEN
@@ -123,15 +152,19 @@ EOF
   chmod 600 "$ENV_FILE"
 fi
 
-# --- 6. systemd service ----------------------------------------------------
+# --- 4. Build --------------------------------------------------------------
 
-CAN_ROOT=0
-if [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; then CAN_ROOT=1; fi
+info "Installing dependencies and building (npm: $NPM)"
+(cd "$INSTALL_DIR" && "$NPM" ci --silent && "$NPM" run build --silent)
+
+# --- 5. systemd service ----------------------------------------------------
 
 STARTED_VIA_SYSTEMD=0
 if [ -z "${NO_SYSTEMD:-}" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] && [ "$CAN_ROOT" -eq 1 ]; then
   info "Installing systemd service ($SERVICE_NAME)"
   UNIT_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+  # Note: ExecStart pins the node binary found right now. If that node came
+  # from nvm and you later remove that version, re-run this installer.
   $SUDO tee "$UNIT_FILE" > /dev/null <<EOF
 [Unit]
 Description=clanked-obsidian MCP server (Obsidian vault access for Claude)
@@ -143,7 +176,7 @@ Type=simple
 User=$(id -un)
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=$(command -v node) $INSTALL_DIR/dist/index.js
+ExecStart=$NODE_BIN $INSTALL_DIR/dist/index.js
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -159,14 +192,16 @@ RestrictSUIDSGID=true
 WantedBy=multi-user.target
 EOF
   $SUDO systemctl daemon-reload
-  $SUDO systemctl enable --now "$SERVICE_NAME"
+  $SUDO systemctl enable "$SERVICE_NAME"
+  # Restart (not just start) so re-runs pick up the freshly built code.
+  $SUDO systemctl restart "$SERVICE_NAME"
   STARTED_VIA_SYSTEMD=1
 else
   warn "Skipping systemd setup. Start manually with:"
-  warn "  cd $INSTALL_DIR && npm start"
+  warn "  cd $INSTALL_DIR && $NPM start"
 fi
 
-# --- 7. Health check -------------------------------------------------------
+# --- 6. Health check -------------------------------------------------------
 
 if [ "$STARTED_VIA_SYSTEMD" -eq 1 ]; then
   for _ in $(seq 1 20); do
@@ -180,7 +215,7 @@ if [ "$STARTED_VIA_SYSTEMD" -eq 1 ]; then
   fi
 fi
 
-# --- 8. Tailscale ----------------------------------------------------------
+# --- 7. Tailscale ----------------------------------------------------------
 
 TS_HOST=""
 if [ -z "${NO_TAILSCALE:-}" ] && command -v tailscale >/dev/null 2>&1; then
@@ -197,7 +232,7 @@ else
   warn "  sudo tailscale serve --bg $PORT     # tailnet-only"
 fi
 
-# --- 9. Summary ------------------------------------------------------------
+# --- 8. Summary ------------------------------------------------------------
 
 echo
 info "Done. Connection details:"
