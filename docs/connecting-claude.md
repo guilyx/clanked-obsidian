@@ -46,19 +46,23 @@ If you can't set headers in the dialog, run a tiny local bridge that speaks stdi
 
 Restart Desktop; the tools appear under the 🔌 icon.
 
-## claude.ai (web) and the mobile app
+## claude.ai (web) and the mobile app — OAuth
 
-This is the only client that requires `tailscale funnel`, because Anthropic's servers — not your device — make the HTTP calls, and they are not in your tailnet.
+This is the only client that requires `tailscale funnel`, because Anthropic's servers — not your device — make the HTTP calls, and they are not in your tailnet. It's also the only client that requires OAuth: on Pro/Max plans the custom connector dialog has no header field, only optional OAuth Client ID/Secret. The server ships a built-in single-user OAuth provider for exactly this, enabled by default (`OAUTH_ENABLED=true`).
 
-1. On the NUC: `sudo tailscale funnel --bg 8484` (and confirm with `tailscale funnel status`).
-2. On claude.ai: Settings → Connectors → **Add custom connector**.
+1. On the NUC: `sudo tailscale funnel --bg 8484` (confirm with `tailscale funnel status`).
+2. On claude.ai: [Customize → Connectors](https://claude.ai/customize/connectors) → **"+"** → **Add custom connector**.
 3. Name: `Obsidian`, URL: `https://<nuc>.<tailnet>.ts.net/mcp`.
-4. In the connector dialog, add a request header: `Authorization` → `Bearer <AUTH_TOKEN>`. Anthropic stores it encrypted and never displays it again.
-5. Save, then enable the connector in a chat via the search-and-tools menu.
+4. **Leave Advanced settings empty** — no Client ID, no Client Secret. Claude discovers the server's OAuth endpoints (`/.well-known/...`) and registers itself via dynamic client registration.
+5. Click **Add**, then **Connect**. Your browser opens an authorization page served by *your* NUC.
+6. Paste your vault access key (the `AUTH_TOKEN` from `/opt/clanked-obsidian/.env` — the install summary printed it) and click **Approve access**.
+7. Claude receives a 30-day access token (auto-refreshed with a rotating 90-day refresh token). Enable the connector in a chat via the search-and-tools menu.
 
 Connectors added on the web are available in the mobile apps too.
 
-**If your account doesn't have the request-headers field yet**, the fallback is OAuth: the connector dialog's Advanced settings accept an OAuth client ID/secret, but your server would need to implement the OAuth flow — out of scope here. Simplest workaround until headers land for you: keep funnel off and use the vault from Claude Code / Desktop only.
+Under the hood this is the standard MCP authorization flow: RFC 9728 protected-resource metadata discovery → RFC 8414 auth-server metadata → RFC 7591 dynamic registration → authorization code + PKCE (S256). Redirect URIs are allowlisted to `claude.ai`/`claude.com` (plus loopback for local bridges), and the browser approval page is rate-limited against brute force.
+
+To cut claude.ai's access later: delete `data/oauth.json` in the install dir and restart the service (revokes all OAuth grants), or rotate `AUTH_TOKEN` to also cut bearer clients.
 
 ## Verifying end to end
 
@@ -83,5 +87,8 @@ You should see the tool list. Without the header you must get a 401 — if you d
 - **401 Unauthorized** — header typo (`Bearer` prefix missing?) or token mismatch with `.env` on the NUC.
 - **Connection refused via ts.net URL** — `tailscale serve status` on the NUC; re-run `sudo tailscale serve --bg 8484`.
 - **Works on laptop, not on claude.ai** — you're serving but not funneling. `sudo tailscale funnel --bg 8484`.
+- **claude.ai says "Unknown client_id"** — you filled in the OAuth Client ID/Secret fields manually. Remove the connector, re-add it with Advanced settings empty, and let it self-register.
+- **claude.ai connect fails immediately** — OAuth is disabled. Set `OAUTH_ENABLED=true` in `.env` and `sudo systemctl restart clanked-obsidian`.
+- **"Wrong access key" on the approval page** — paste the exact `AUTH_TOKEN` value from `.env` (no `Bearer` prefix, no quotes).
 - **`AUTH_TOKEN is required in http mode`** on startup — set it in `.env` (the server refuses to run unauthenticated HTTP by design).
 - **Tools missing in Claude** — `write_note`/`append_note` disappear when `READ_ONLY=true`; `delete_note` only exists when `ALLOW_DELETE=true`.

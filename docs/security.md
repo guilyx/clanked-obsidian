@@ -11,7 +11,14 @@ Your vault is personal data; this document is honest about what protects it and 
 
 2. **Transport encryption.** Tailscale terminates HTTPS with a real certificate for `*.ts.net`. The token never travels in cleartext.
 
-3. **Application auth.** Every `/mcp` request needs `Authorization: Bearer <AUTH_TOKEN>` (or `x-api-key`). Comparison is timing-safe. The server refuses to start in HTTP mode without a token — there is no "open" mode to misconfigure. Only `/healthz` is unauthenticated, and it reveals nothing but liveness.
+3. **Application auth.** Every `/mcp` request needs a valid bearer credential: either the static `AUTH_TOKEN` or an OAuth access token the server itself issued. Comparisons are timing-safe. The server refuses to start in HTTP mode without a token — there is no "open" mode to misconfigure. Only `/healthz` and the OAuth discovery/registration endpoints are unauthenticated, and they reveal no vault data.
+
+   The built-in OAuth provider (for claude.ai connectors) is deliberately narrow:
+   - Authorization code + PKCE **S256 required**; codes are single-use and expire in 5 minutes.
+   - Dynamic client registration only accepts redirect URIs on `claude.ai`/`claude.com` (HTTPS) or loopback (for local bridges like `mcp-remote`) — no arbitrary redirect targets.
+   - Approving access means pasting the `AUTH_TOKEN` into a browser page served by your machine; that page is rate-limited to 5 failed attempts per 15 minutes per IP.
+   - Access tokens live 30 days, refresh tokens 90 days and rotate on every use. All tokens are stored **sha256-hashed** in `DATA_DIR/oauth.json` (mode 600) — a stolen store file yields no usable credentials.
+   - Revoke everything OAuth: delete `DATA_DIR/oauth.json` and restart. Revoke everything including bearer clients: rotate `AUTH_TOKEN`.
 
 4. **Vault jail.** Every path is resolved against the vault root; `..`, absolute paths, and symlinks pointing outside the vault are refused. `EXCLUDE_DIRS` (default `.obsidian`, `.trash`, `.git`) are invisible to listing, search, read and write.
 

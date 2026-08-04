@@ -40,6 +40,15 @@ Start with tailnet-only. Turn on funnel only if you want your vault from claude.
 
 Safety rails (always on): paths are jailed to the vault root (`..`, absolute paths, and escaping symlinks are refused), `.obsidian`/`.trash`/`.git` and any `EXCLUDE_DIRS` are invisible, writes are limited to `.md` files, and reads are size-capped.
 
+## Authentication: two paths
+
+| Path | Used by | How it works |
+|---|---|---|
+| **Bearer token** | Claude Code, Claude Desktop, `mcp-remote`, curl | Send `Authorization: Bearer <AUTH_TOKEN>` on every request |
+| **OAuth 2.1** (built-in) | **claude.ai custom connectors** (web + mobile) | claude.ai registers itself automatically (leave Client ID/Secret empty), then a browser page asks you to paste your vault access key once to approve |
+
+Why both: on Pro/Max plans the claude.ai connector dialog only supports OAuth — there is no header field — so a plain bearer token can't work there. The server therefore ships a minimal single-user OAuth provider (dynamic client registration, authorization code + PKCE, refresh tokens, hashed at rest). Bearer stays the simplest path for Claude Code/Desktop inside your tailnet. The installer asks which you want; `OAUTH_ENABLED=false` turns the OAuth endpoints off entirely.
+
 ## Setup on the NUC
 
 Prerequisites: Node 20+, Tailscale already up (`tailscale status` works), and the vault synced to the NUC (Syncthing, Obsidian Sync via a headless client, git — whatever you already use).
@@ -142,9 +151,14 @@ Settings → Connectors → Add custom connector, URL as above. If your plan's c
 }
 ```
 
-### claude.ai web / mobile (requires funnel)
+### claude.ai web / mobile (requires funnel + OAuth)
 
-Settings → Connectors → Add custom connector → URL `https://<nuc>.<tailnet>.ts.net/mcp`. Add the `Authorization: Bearer <AUTH_TOKEN>` request header (beta field in the connector dialog). The token is stored encrypted by Anthropic and sent on every request. See [docs/connecting-claude.md](docs/connecting-claude.md) for the click-by-click version and fallbacks.
+1. `sudo tailscale funnel --bg 8484` on the NUC.
+2. claude.ai → Settings → Connectors → Add custom connector → URL `https://<nuc>.<tailnet>.ts.net/mcp`.
+3. **Leave Advanced settings (OAuth Client ID/Secret) empty** — the connector registers itself via dynamic client registration.
+4. Click Connect; a browser page from your server asks for your vault access key. Paste the `AUTH_TOKEN` and approve.
+
+See [docs/connecting-claude.md](docs/connecting-claude.md) for the click-by-click version and troubleshooting.
 
 ## Configuration reference
 
@@ -162,6 +176,21 @@ All via environment variables (see [`.env.example`](.env.example)):
 | `MAX_SEARCH_RESULTS` | `100` | Search result cap |
 | `EXCLUDE_DIRS` | `.obsidian,.trash,.git` | Comma-separated, never exposed |
 | `DAILY_NOTES_FOLDER` | vault root | Folder containing `YYYY-MM-DD.md` notes |
+| `OAUTH_ENABLED` | `true` | OAuth endpoints for claude.ai connectors |
+| `DATA_DIR` | `./data` | OAuth registrations + hashed tokens |
+| `PUBLIC_URL` | derived from `Host` | Override external base URL in OAuth metadata |
+
+## Updating and uninstalling
+
+**Update:** re-run the install one-liner. It pulls the latest code, rebuilds, restarts the service, and keeps your `.env` (token, vault path) and OAuth grants untouched.
+
+**Uninstall:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/guilyx/clanked-obsidian/main/scripts/uninstall.sh | bash
+```
+
+Stops and removes the systemd service, turns off `tailscale serve`/`funnel`, and asks before deleting the install directory (which holds the code, `.env` token, and OAuth grants — your vault is never touched). Non-interactive: `PURGE=1` deletes without asking, `KEEP=1` keeps it, `NO_TAILSCALE=1` leaves tailscale config alone. Then remove the connector from your Claude clients (`claude mcp remove obsidian` / Desktop config / claude.ai settings).
 
 ## Security model
 

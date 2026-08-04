@@ -12,6 +12,9 @@ export interface Config {
   maxSearchResults: number;
   excludeDirs: string[];
   dailyNotesFolder: string | null;
+  oauthEnabled: boolean;
+  dataDir: string;
+  publicUrl: string | null;
 }
 
 function envBool(name: string, fallback: boolean): boolean {
@@ -70,5 +73,8 @@ export function loadConfig(): Config {
     maxSearchResults: envInt("MAX_SEARCH_RESULTS", 100),
     excludeDirs,
     dailyNotesFolder: process.env.DAILY_NOTES_FOLDER?.trim() || null,
+    oauthEnabled: envBool("OAUTH_ENABLED", true),
+    dataDir: path.resolve(process.env.DATA_DIR ?? "./data"),
+    publicUrl: process.env.PUBLIC_URL?.trim().replace(/\/+$/, "") || null,
   };
 }
