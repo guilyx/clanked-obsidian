@@ -10,7 +10,10 @@ services:
       AUTH_TOKEN: ${AUTH_TOKEN:?run 'openssl rand -hex 32' and put it in .env}
       READ_ONLY: ${READ_ONLY:-false}
       ALLOW_DELETE: ${ALLOW_DELETE:-false}
+      OAUTH_ENABLED: ${OAUTH_ENABLED:-true}
       DAILY_NOTES_FOLDER: ${DAILY_NOTES_FOLDER:-}
     volumes:
       # Left side: vault path on the NUC. Add ':ro' for a read-only mount.
       - ${VAULT_PATH:?set VAULT_PATH in .env}:/vault
+      # OAuth client registrations and hashed tokens persist here
+      - ./data:/data

@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config.js";
 import { buildServer } from "./server.js";
 import { bearerAuth } from "./auth.js";
+import { OAuthStore, registerOAuthRoutes } from "./oauth.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -17,13 +18,20 @@ async function main(): Promise<void> {
 
   const app = express();
   app.use(express.json({ limit: "4mb" }));
+  app.use(express.urlencoded({ extended: false }));
 
   app.get("/healthz", (_req, res) => {
     res.json({ ok: true, readOnly: config.readOnly });
   });
 
+  let oauthStore: OAuthStore | null = null;
+  if (config.oauthEnabled) {
+    oauthStore = new OAuthStore(config.dataDir);
+    registerOAuthRoutes(app, config, oauthStore);
+  }
+
   // authToken is guaranteed non-null in http mode by loadConfig.
-  app.use("/mcp", bearerAuth(config.authToken!));
+  app.use("/mcp", bearerAuth(config.authToken!, oauthStore));
 
   // Stateless mode: a fresh server + transport per request. Slightly more
   // work per call, but no session table to leak and safe behind any proxy.
@@ -64,7 +72,8 @@ async function main(): Promise<void> {
   app.listen(config.port, config.bindHost, () => {
     console.log(
       `clanked-obsidian listening on http://${config.bindHost}:${config.port}/mcp` +
-        ` (vault: ${config.vaultPath}, readOnly: ${config.readOnly}, delete: ${config.allowDelete})`
+        ` (vault: ${config.vaultPath}, readOnly: ${config.readOnly}, delete: ${config.allowDelete}` +
+        `, oauth: ${config.oauthEnabled})`
     );
   });
 }

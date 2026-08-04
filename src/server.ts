@@ -23,7 +23,7 @@ export function buildServer(config: Config): McpServer {
   const vault = new Vault(config);
   const server = new McpServer({
     name: "clanked-obsidian",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
   server.registerTool(

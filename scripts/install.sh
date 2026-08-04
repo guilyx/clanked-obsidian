@@ -16,10 +16,14 @@
 #   INSTALL_DIR   where to install (default /opt/clanked-obsidian)
 #   PORT          HTTP port (default 8484)
 #   READ_ONLY     true/false (default false)
+#   OAUTH_ENABLED true/false (default true) — OAuth endpoints for claude.ai connectors
 #   DAILY_NOTES_FOLDER  vault-relative daily notes folder (default empty)
 #   NO_SYSTEMD=1  skip systemd service installation
 #   NO_TAILSCALE=1  skip tailscale serve setup
 #   CLANKED_REPO / CLANKED_BRANCH  alternate git source (for development)
+#
+# Uninstall later with:
+#   curl -fsSL https://raw.githubusercontent.com/guilyx/clanked-obsidian/main/scripts/uninstall.sh | bash
 
 set -euo pipefail
 
@@ -125,6 +129,10 @@ if [ -f "$ENV_FILE" ]; then
   AUTH_TOKEN="$(env_get "$ENV_FILE" AUTH_TOKEN)"
   PORT="$(env_get "$ENV_FILE" PORT)"
   PORT="${PORT:-8484}"
+  OAUTH_ENABLED="$(env_get "$ENV_FILE" OAUTH_ENABLED)"
+  OAUTH_ENABLED="${OAUTH_ENABLED:-true}"
+  DATA_DIR="$(env_get "$ENV_FILE" DATA_DIR)"
+  DATA_DIR="${DATA_DIR:-$INSTALL_DIR/data}"
   [ -n "$VAULT_PATH" ] || die "Existing $ENV_FILE has no VAULT_PATH. Delete it and re-run."
 else
   if [ -z "${VAULT_PATH:-}" ]; then
@@ -138,11 +146,29 @@ else
   esac
   [ -d "$VAULT_PATH" ] || die "No such directory: $VAULT_PATH"
 
+  # Two auth paths, both always available to choose from:
+  #   bearer — static token header; Claude Code / Desktop / mcp-remote
+  #   oauth  — claude.ai web+mobile custom connectors (Pro/Max plans only
+  #            offer OAuth in the connector dialog, so this is the only way
+  #            for claude.ai to connect)
+  if [ -z "${OAUTH_ENABLED:-}" ]; then
+    echo
+    echo "How will Claude connect? Bearer-token auth (Claude Code / Desktop over"
+    echo "your tailnet) is always on. OAuth adds support for claude.ai web/mobile"
+    echo "custom connectors (their dialog only offers OAuth on Pro/Max plans)."
+    REPLY="$(prompt "Also enable OAuth for claude.ai? [Y/n]: ")"
+    case "$REPLY" in
+      n|N|no|NO) OAUTH_ENABLED=false ;;
+      *) OAUTH_ENABLED=true ;;
+    esac
+  fi
+
   if command -v openssl >/dev/null 2>&1; then
     AUTH_TOKEN="$(openssl rand -hex 32)"
   else
     AUTH_TOKEN="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
   fi
+  DATA_DIR="$INSTALL_DIR/data"
   info "Generating $ENV_FILE"
   cat > "$ENV_FILE" <<EOF
 VAULT_PATH=$VAULT_PATH
@@ -152,10 +178,13 @@ PORT=$PORT
 BIND_HOST=127.0.0.1
 READ_ONLY=${READ_ONLY:-false}
 ALLOW_DELETE=false
+OAUTH_ENABLED=$OAUTH_ENABLED
+DATA_DIR=$DATA_DIR
 DAILY_NOTES_FOLDER=${DAILY_NOTES_FOLDER:-}
 EOF
   chmod 600 "$ENV_FILE"
 fi
+mkdir -p "$DATA_DIR"
 
 # --- 4. Build --------------------------------------------------------------
 
@@ -187,7 +216,7 @@ RestartSec=3
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=$VAULT_PATH
+ReadWritePaths=$VAULT_PATH $DATA_DIR
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
@@ -239,23 +268,31 @@ fi
 
 # --- 8. Summary ------------------------------------------------------------
 
+URL_SHOWN="https://<nuc>.<tailnet>.ts.net/mcp"
+if [ -n "$TS_HOST" ]; then URL_SHOWN="https://$TS_HOST/mcp"; fi
+
 echo
-info "Done. Connection details:"
+info "Done. MCP URL: $URL_SHOWN"
 echo
-if [ -n "$TS_HOST" ]; then
-  echo "  MCP URL:    https://$TS_HOST/mcp"
-else
-  echo "  MCP URL:    https://<nuc>.<tailnet>.ts.net/mcp   (after tailscale serve)"
-fi
-echo "  Auth:       Authorization: Bearer $AUTH_TOKEN"
+echo "── Path 1: bearer token — Claude Code / Claude Desktop (device in your tailnet)"
 echo
-echo "  Claude Code:"
-if [ -n "$TS_HOST" ]; then
-  echo "    claude mcp add --transport http obsidian https://$TS_HOST/mcp \\"
-else
-  echo "    claude mcp add --transport http obsidian https://<nuc>.<tailnet>.ts.net/mcp \\"
-fi
+echo "    claude mcp add --transport http obsidian $URL_SHOWN \\"
 echo "      --header \"Authorization: Bearer $AUTH_TOKEN\""
 echo
-echo "  For claude.ai (web/mobile), also run:  sudo tailscale funnel --bg $PORT"
-echo "  Docs: https://github.com/guilyx/clanked-obsidian/blob/main/docs/connecting-claude.md"
+if [ "$OAUTH_ENABLED" = "true" ]; then
+  echo "── Path 2: OAuth — claude.ai custom connector (web + mobile, Pro/Max)"
+  echo
+  echo "    1. Make it publicly reachable:  sudo tailscale funnel --bg $PORT"
+  echo "    2. claude.ai -> Settings -> Connectors -> Add custom connector"
+  echo "    3. URL: $URL_SHOWN"
+  echo "       Leave 'Advanced settings' (Client ID / Secret) EMPTY — the"
+  echo "       connector registers itself automatically."
+  echo "    4. Click Connect: a browser page asks for your vault access key."
+  echo "       Paste:  $AUTH_TOKEN"
+else
+  echo "── OAuth is disabled (claude.ai web/mobile connectors won't work)."
+  echo "   Enable it later: set OAUTH_ENABLED=true in $ENV_FILE and restart."
+fi
+echo
+echo "  Uninstall:  curl -fsSL https://raw.githubusercontent.com/guilyx/clanked-obsidian/main/scripts/uninstall.sh | bash"
+echo "  Docs:       https://github.com/guilyx/clanked-obsidian/blob/main/docs/connecting-claude.md"
