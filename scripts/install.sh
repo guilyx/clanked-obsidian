@@ -94,8 +94,13 @@ fi
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing install in $INSTALL_DIR"
   git -C "$INSTALL_DIR" fetch origin "$BRANCH"
-  git -C "$INSTALL_DIR" checkout -q "$BRANCH"
-  git -C "$INSTALL_DIR" pull --ff-only -q origin "$BRANCH"
+  git -C "$INSTALL_DIR" checkout -q "$BRANCH" 2>/dev/null || git -C "$INSTALL_DIR" checkout -q -b "$BRANCH" "origin/$BRANCH"
+  if ! git -C "$INSTALL_DIR" pull --ff-only -q origin "$BRANCH" 2>/dev/null; then
+    # Diverged from origin (e.g. after a force-push upstream). The install
+    # dir is disposable code; .env is untracked and survives the reset.
+    warn "Local copy diverged from origin/$BRANCH — resetting to it"
+    git -C "$INSTALL_DIR" reset --hard -q "origin/$BRANCH"
+  fi
 else
   info "Cloning into $INSTALL_DIR"
   if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
