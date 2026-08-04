@@ -20,6 +20,7 @@
 #   DAILY_NOTES_FOLDER  vault-relative daily notes folder (default empty)
 #   NO_SYSTEMD=1  skip systemd service installation
 #   NO_TAILSCALE=1  skip tailscale serve setup
+#   NODE_VERSION  pin the Node version for the private self-install path
 #   CLANKED_REPO / CLANKED_BRANCH  alternate git source (for development)
 #
 # Uninstall later with:
@@ -63,35 +64,7 @@ if [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; then CAN_ROOT=1; fi
 
 command -v git >/dev/null 2>&1 || die "git is required. Install it and re-run."
 command -v curl >/dev/null 2>&1 || die "curl is required. Install it and re-run."
-
-if ! command -v node >/dev/null 2>&1; then
-  die "Node.js >= 20 is required. Install it first, e.g.:
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
-or with nvm:
-  nvm install 22"
-fi
-NODE_BIN="$(command -v node)"
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "$NODE_MAJOR" -lt 20 ]; then
-  die "Node.js >= 20 required, found $(node --version) at $NODE_BIN.
-If you use nvm, run 'nvm use 22' (or 'nvm install 22') in this shell and re-run."
-fi
-
-# Always use the npm that ships alongside the resolved node binary. This
-# sidesteps the classic broken combo of a distro apt npm
-# (/usr/share/nodejs/npm) paired with an nvm-installed node, which dies with
-# "Cannot find module 'semver'".
-NPM="$(dirname "$NODE_BIN")/npm"
-if [ ! -x "$NPM" ]; then
-  NPM="$(command -v npm || true)"
-fi
-[ -n "$NPM" ] || die "npm not found (it normally ships with Node.js)."
-if ! "$NPM" --version >/dev/null 2>&1; then
-  die "npm at $NPM is broken — usually a distro npm mixed with an nvm node.
-Fix with ONE of these, then re-run:
-  nvm install-latest-npm      # give nvm's node a matching npm
-  sudo apt-get remove npm     # drop the distro npm so nvm's is used"
-fi
+command -v tar >/dev/null 2>&1 || die "tar is required. Install it and re-run."
 
 # --- 2. Clone or update ----------------------------------------------------
 
@@ -115,7 +88,80 @@ else
   git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
-# --- 3. Configuration ------------------------------------------------------
+# --- 3. Node.js (self-healing) ----------------------------------------------
+# Resolution order:
+#   1. node on PATH, if >= 20
+#   2. newest nvm-installed node >= 20 (~/.nvm is a shell function that piped
+#      'curl | bash' never loads, so scan its versions dir directly)
+#   3. a copy this script previously installed into $INSTALL_DIR/.node
+#   4. download an official Node build into $INSTALL_DIR/.node
+# System node is never modified.
+
+node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
+
+NODE_BIN=""
+if command -v node >/dev/null 2>&1 && [ "$(node_major "$(command -v node)")" -ge 20 ]; then
+  NODE_BIN="$(command -v node)"
+fi
+if [ -z "$NODE_BIN" ] && [ -d "$HOME/.nvm/versions/node" ]; then
+  for cand in $(ls -d "$HOME/.nvm/versions/node"/v*/bin/node 2>/dev/null | sort -rV); do
+    if [ "$(node_major "$cand")" -ge 20 ]; then
+      NODE_BIN="$cand"
+      info "Using Node from nvm: $cand"
+      break
+    fi
+  done
+fi
+if [ -z "$NODE_BIN" ] && [ -x "$INSTALL_DIR/.node/bin/node" ] && [ "$(node_major "$INSTALL_DIR/.node/bin/node")" -ge 20 ]; then
+  NODE_BIN="$INSTALL_DIR/.node/bin/node"
+fi
+if [ -z "$NODE_BIN" ]; then
+  info "No Node.js >= 20 found — installing a private copy into $INSTALL_DIR/.node"
+  case "$(uname -m)" in
+    x86_64) NODE_ARCH=x64 ;;
+    aarch64|arm64) NODE_ARCH=arm64 ;;
+    armv7l) NODE_ARCH=armv7l ;;
+    *) die "Unsupported architecture $(uname -m) — install Node.js >= 20 manually and re-run." ;;
+  esac
+  if [ -z "${NODE_VERSION:-}" ]; then
+    NODE_VERSION="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/ 2>/dev/null \
+      | grep -o 'node-v22\.[0-9]*\.[0-9]*-linux-x64\.tar\.gz' | head -1 \
+      | sed 's/^node-v//;s/-linux.*//' || true)"
+  fi
+  NODE_VERSION="${NODE_VERSION:-22.20.0}"
+  TARBALL="node-v$NODE_VERSION-linux-$NODE_ARCH.tar.gz"
+  info "Downloading Node v$NODE_VERSION ($NODE_ARCH) from nodejs.org"
+  TMP_TGZ="$(mktemp)"
+  curl -fSL --progress-bar "https://nodejs.org/dist/v$NODE_VERSION/$TARBALL" -o "$TMP_TGZ" \
+    || die "Could not download Node.js. Install Node >= 20 manually and re-run."
+  if command -v sha256sum >/dev/null 2>&1; then
+    EXPECTED="$(curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" 2>/dev/null | grep " $TARBALL\$" | awk '{print $1}' || true)"
+    if [ -n "$EXPECTED" ]; then
+      ACTUAL="$(sha256sum "$TMP_TGZ" | awk '{print $1}')"
+      [ "$EXPECTED" = "$ACTUAL" ] || die "Node.js download checksum mismatch — aborting."
+    fi
+  fi
+  rm -rf "$INSTALL_DIR/.node"
+  mkdir -p "$INSTALL_DIR/.node"
+  tar -xzf "$TMP_TGZ" -C "$INSTALL_DIR/.node" --strip-components=1
+  rm -f "$TMP_TGZ"
+  NODE_BIN="$INSTALL_DIR/.node/bin/node"
+fi
+info "Node: $("$NODE_BIN" --version) ($NODE_BIN)"
+
+# Always use the npm that ships alongside the resolved node binary. This
+# sidesteps the classic broken combo of a distro apt npm
+# (/usr/share/nodejs/npm) paired with an nvm node, which dies with
+# "Cannot find module 'semver'".
+NPM="$(dirname "$NODE_BIN")/npm"
+if [ ! -x "$NPM" ]; then
+  NPM="$(command -v npm || true)"
+fi
+[ -n "$NPM" ] || die "npm not found next to $NODE_BIN (it normally ships with Node.js)."
+"$NPM" --version >/dev/null 2>&1 || die "npm at $NPM is broken — re-run with NODE_VERSION set to force a private Node install, e.g.:
+  NODE_VERSION=22.20.0 bash <this script>"
+
+# --- 4. Configuration ------------------------------------------------------
 # An existing .env wins: re-runs never prompt and never rotate the token.
 
 ENV_FILE="$INSTALL_DIR/.env"
@@ -166,7 +212,7 @@ else
   if command -v openssl >/dev/null 2>&1; then
     AUTH_TOKEN="$(openssl rand -hex 32)"
   else
-    AUTH_TOKEN="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+    AUTH_TOKEN="$("$NODE_BIN" -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
   fi
   DATA_DIR="$INSTALL_DIR/data"
   info "Generating $ENV_FILE"
@@ -186,12 +232,14 @@ EOF
 fi
 mkdir -p "$DATA_DIR"
 
-# --- 4. Build --------------------------------------------------------------
+# --- 5. Build --------------------------------------------------------------
 
 info "Installing dependencies and building (npm: $NPM)"
-(cd "$INSTALL_DIR" && "$NPM" ci --silent && "$NPM" run build --silent)
+# Prepend the chosen node's dir so lifecycle scripts (tsc's `env node`
+# shebang) resolve the same interpreter, not an old system node.
+(cd "$INSTALL_DIR" && export PATH="$(dirname "$NODE_BIN"):$PATH" && "$NPM" ci --silent && "$NPM" run build --silent)
 
-# --- 5. systemd service ----------------------------------------------------
+# --- 6. systemd service ----------------------------------------------------
 
 STARTED_VIA_SYSTEMD=0
 if [ -z "${NO_SYSTEMD:-}" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] && [ "$CAN_ROOT" -eq 1 ]; then
@@ -235,7 +283,7 @@ else
   warn "  cd $INSTALL_DIR && $NPM start"
 fi
 
-# --- 6. Health check -------------------------------------------------------
+# --- 7. Health check -------------------------------------------------------
 
 if [ "$STARTED_VIA_SYSTEMD" -eq 1 ]; then
   for _ in $(seq 1 20); do
@@ -249,14 +297,14 @@ if [ "$STARTED_VIA_SYSTEMD" -eq 1 ]; then
   fi
 fi
 
-# --- 7. Tailscale ----------------------------------------------------------
+# --- 8. Tailscale ----------------------------------------------------------
 
 TS_HOST=""
 if [ -z "${NO_TAILSCALE:-}" ] && command -v tailscale >/dev/null 2>&1; then
   info "Exposing to your tailnet: tailscale serve --bg $PORT"
   if $SUDO tailscale serve --bg "$PORT"; then
     TS_HOST="$(tailscale status --json 2>/dev/null \
-      | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).Self.DNSName.replace(/\.$/,""))}catch{}})' \
+      | "$NODE_BIN" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).Self.DNSName.replace(/\.$/,""))}catch{}})' \
       2>/dev/null || true)"
   else
     warn "tailscale serve failed — run it manually: sudo tailscale serve --bg $PORT"
@@ -266,7 +314,7 @@ else
   warn "  sudo tailscale serve --bg $PORT     # tailnet-only"
 fi
 
-# --- 8. Summary ------------------------------------------------------------
+# --- 9. Summary ------------------------------------------------------------
 
 URL_SHOWN="https://<nuc>.<tailnet>.ts.net/mcp"
 if [ -n "$TS_HOST" ]; then URL_SHOWN="https://$TS_HOST/mcp"; fi

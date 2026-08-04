@@ -51,7 +51,7 @@ Why both: on Pro/Max plans the claude.ai connector dialog only supports OAuth �
 
 ## Setup on the NUC
 
-Prerequisites: Node 20+, Tailscale already up (`tailscale status` works), and the vault synced to the NUC (Syncthing, Obsidian Sync via a headless client, git — whatever you already use).
+Prerequisites: Tailscale already up (`tailscale status` works) and the vault synced to the NUC (Syncthing, Obsidian Sync via a headless client, git — whatever you already use). Node.js is **not** a prerequisite: the installer uses your `node` if it's ≥ 20, finds one in `~/.nvm` if the shell doesn't expose it, and otherwise downloads a private, checksum-verified copy into the install dir without touching your system.
 
 ### One-liner install
 
@@ -68,12 +68,12 @@ VAULT_PATH=/home/you/vaults/main READ_ONLY=true \
   curl -fsSL https://raw.githubusercontent.com/guilyx/clanked-obsidian/main/scripts/install.sh | bash
 ```
 
-Recognized env vars: `VAULT_PATH`, `INSTALL_DIR`, `PORT`, `READ_ONLY`, `DAILY_NOTES_FOLDER`, `NO_SYSTEMD=1`, `NO_TAILSCALE=1`.
+Recognized env vars: `VAULT_PATH`, `INSTALL_DIR`, `PORT`, `READ_ONLY`, `OAUTH_ENABLED`, `DAILY_NOTES_FOLDER`, `NODE_VERSION`, `NO_SYSTEMD=1`, `NO_TAILSCALE=1`.
 
 Install troubleshooting:
 
-- **`Cannot find module 'semver'` from npm** — a distro apt `npm` mixed with an nvm-installed `node`. The installer works around this by using the npm bundled with your node; if npm itself is still broken, run `nvm install-latest-npm` or `sudo apt-get remove npm`.
-- **Node too old** (`found v12...`) — install Node 20+ first (`nvm install 22` or NodeSource), then re-run in the same shell where `node --version` says 20+.
+- **`Cannot find module 'semver'` from npm** — a distro apt `npm` mixed with an nvm-installed `node`. The installer works around this by using the npm bundled with the node it selected; if npm is still broken, re-run with `NODE_VERSION=22.20.0` to force a private Node install.
+- **Old system node (v12 etc.)** — handled automatically: the installer prefers nvm-installed versions and falls back to downloading its own Node into `<install dir>/.node`. `NODE_VERSION=x.y.z` pins the downloaded version.
 - **Re-runs** never prompt and never rotate the token: config lives in `/opt/clanked-obsidian/.env`. Delete that file to reconfigure from scratch.
 - **nvm-managed node + systemd** — the service pins the node binary path found at install time. If you later remove that nvm version, re-run the installer to re-pin.
 
