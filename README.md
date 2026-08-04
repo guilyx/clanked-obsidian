@@ -61,6 +61,13 @@ VAULT_PATH=/home/you/vaults/main READ_ONLY=true \
 
 Recognized env vars: `VAULT_PATH`, `INSTALL_DIR`, `PORT`, `READ_ONLY`, `DAILY_NOTES_FOLDER`, `NO_SYSTEMD=1`, `NO_TAILSCALE=1`.
 
+Install troubleshooting:
+
+- **`Cannot find module 'semver'` from npm** — a distro apt `npm` mixed with an nvm-installed `node`. The installer works around this by using the npm bundled with your node; if npm itself is still broken, run `nvm install-latest-npm` or `sudo apt-get remove npm`.
+- **Node too old** (`found v12...`) — install Node 20+ first (`nvm install 22` or NodeSource), then re-run in the same shell where `node --version` says 20+.
+- **Re-runs** never prompt and never rotate the token: config lives in `/opt/clanked-obsidian/.env`. Delete that file to reconfigure from scratch.
+- **nvm-managed node + systemd** — the service pins the node binary path found at install time. If you later remove that nvm version, re-run the installer to re-pin.
+
 ### Manual install
 
 ```bash
